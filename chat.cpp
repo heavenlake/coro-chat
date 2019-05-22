@@ -217,7 +217,7 @@ public:
 
     void activate ();
     void deactivate ();
-    void broadcast (std::string const& sender, std::string message);
+    cppcoro::task<void> broadcast (std::string const& sender, std::string message);
 
 protected:
     void activate (std::list<chat_user>::iterator user);
@@ -247,7 +247,7 @@ chat_user::activate () {
         } else if (ec == asio::error::eof) {
             active_ = false;
             socket_.cancel (ec);
-            server_->broadcast ("", fmt::format ("{} has disconnected", name_));
+            co_await server_->broadcast ("", fmt::format ("{} has disconnected", name_));
             co_return;
         } else if (ec) {
             throw boost::system::system_error (ec, ec.message ());
@@ -255,7 +255,7 @@ chat_user::activate () {
 
         if (name_.empty ()) {
             name_ = std::move (message);
-            server_->broadcast ("", fmt::format ("{} has joined", name_));
+            co_await server_->broadcast ("", fmt::format ("{} has joined", name_));
             continue;
         }
 
@@ -264,7 +264,7 @@ chat_user::activate () {
             continue;
         }
 
-        server_->broadcast (name_, std::move (message));
+        co_await server_->broadcast (name_, std::move (message));
     } while (active_);
 
     socket_.shutdown (tcp::socket::shutdown_receive, ec);
@@ -291,8 +291,6 @@ chat_user::send (std::shared_ptr<std::string const> message) {
     if (!active_) {
         co_return;
     }
-
-    throw 42;
 
     auto ec = co_await async_write (socket_, asio::buffer (*message));
     if (ec && (ec != asio::error::operation_aborted)) {
@@ -342,10 +340,10 @@ chat_server::deactivate () {
     }
 }
 
-void
+cppcoro::task<void>
 chat_server::broadcast (std::string const& sender, std::string message) {
     if (!active_) {
-        return;
+        co_return;
     }
 
     std::string msg;
