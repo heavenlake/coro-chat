@@ -20,6 +20,8 @@ using tcp      = ip::tcp;
     template <typename... Args>                                                \
     struct std::experimental::coroutine_traits<void, CLASS&, Args...> {        \
         struct promise_type {                                                  \
+            std::exception_ptr eptr;                                           \
+                                                                               \
             suspend_never                                                      \
             initial_suspend () {                                               \
                 return {};                                                     \
@@ -40,7 +42,7 @@ using tcp      = ip::tcp;
                                                                                \
             void                                                               \
             unhandled_exception () {                                           \
-                std::rethrow_exception (std::current_exception ());            \
+                eptr = std::current_exception ();                              \
             }                                                                  \
         };                                                                     \
     };
@@ -215,7 +217,7 @@ public:
 
     void activate ();
     void deactivate ();
-    void broadcast (std::string sender, std::string message);
+    void broadcast (std::string const& sender, std::string message);
 
 protected:
     void activate (std::list<chat_user>::iterator user);
@@ -243,8 +245,10 @@ chat_user::activate () {
         if (ec == asio::error::operation_aborted) {
             continue;
         } else if (ec == asio::error::eof) {
+            active_ = false;
+            socket_.cancel (ec);
             server_->broadcast ("", fmt::format ("{} has disconnected", name_));
-            break;
+            co_return;
         } else if (ec) {
             throw boost::system::system_error (ec, ec.message ());
         }
@@ -263,8 +267,7 @@ chat_user::activate () {
         server_->broadcast (name_, std::move (message));
     } while (active_);
 
-    active_ = false;
-    socket_.shutdown (tcp::socket::shutdown_both, ec);
+    socket_.shutdown (tcp::socket::shutdown_receive, ec);
 }
 
 void
@@ -272,8 +275,10 @@ chat_user::deactivate () {
     if (!active_) {
         return;
     }
+    boost::system::error_code ec;
     active_ = false;
-    socket_.cancel ();
+    socket_.shutdown (tcp::socket::shutdown_send, ec);
+    socket_.cancel (ec);
 }
 
 bool
@@ -286,6 +291,8 @@ chat_user::send (std::shared_ptr<std::string const> message) {
     if (!active_) {
         co_return;
     }
+
+    throw 42;
 
     auto ec = co_await async_write (socket_, asio::buffer (*message));
     if (ec && (ec != asio::error::operation_aborted)) {
@@ -319,8 +326,6 @@ chat_server::activate () {
         users_.emplace_back (this, std::move (socket));
         this->activate (std::prev (users_.end ()));
     } while (active_);
-
-    active_ = false;
 }
 
 void
@@ -328,9 +333,9 @@ chat_server::deactivate () {
     if (!active_) {
         return;
     }
-
+    boost::system::error_code ec;
     active_ = false;
-    acceptor_.cancel ();
+    acceptor_.cancel (ec);
 
     for (auto& user : users_) {
         user.deactivate ();
@@ -338,7 +343,7 @@ chat_server::deactivate () {
 }
 
 void
-chat_server::broadcast (std::string sender, std::string message) {
+chat_server::broadcast (std::string const& sender, std::string message) {
     if (!active_) {
         return;
     }
